@@ -71,7 +71,14 @@ class StylePreviewWorker(QThread):
                 self.kwargs.get("rotoscope_end_sec"),
                 self.kwargs.get("rotoscope_downsample")
             ]
-            image_path = generate_style_preview_gui(*args)
+            image_path = generate_style_preview_gui(
+                *args,
+                multi_preset_mode=self.kwargs.get("multi_preset_mode", "Single Preset (Disabled)"),
+                multi_preset_pool=self.kwargs.get("multi_preset_pool", []),
+                multi_preset_lock_alignment=self.kwargs.get("multi_preset_lock_alignment", True),
+                multi_preset_unified_zoom=self.kwargs.get("multi_preset_unified_zoom", True),
+                multi_preset_scale_font_size=self.kwargs.get("multi_preset_scale_font_size", 1.0)
+            )
             self.finished.emit(image_path)
         except Exception as e:
             import traceback
@@ -112,7 +119,7 @@ class RenderWorker(QThread):
                 args = [
                     vid_path,
                     self.kwargs.get("input_audio"),
-                    self.kwargs.get("audio_aspect"),
+                    self.kwargs.get("audio_aspect", "16:9 (YouTube)"),
                     words_tbl,
                     whisper_state,
                     overrides_state,
@@ -159,11 +166,11 @@ class RenderWorker(QThread):
                     self.kwargs.get("face_detector_model"),
                     self.kwargs.get("min_cooldown_slider"),
                     self.kwargs.get("zoom_hold_slider"),
-                    self.kwargs.get("enable_dynamic_tracking"),
-                    self.kwargs.get("tracking_mode"),
-                    self.kwargs.get("tracking_smoothness"),
-                    self.kwargs.get("tracking_start_sec"),
-                    self.kwargs.get("tracking_end_sec"),
+                    self.kwargs.get("enable_dynamic_tracking", False),
+                    self.kwargs.get("tracking_mode", "Auto-Zoom to Fill Voids (Method B)"),
+                    self.kwargs.get("tracking_smoothness", 15),
+                    self.kwargs.get("tracking_start_sec", 0.0),
+                    self.kwargs.get("tracking_end_sec", 0.0),
                     self.kwargs.get("enable_sfx"),
                     self.kwargs.get("sfx_preset_dropdown"),
                     self.kwargs.get("sfx_upload_file"),
@@ -188,12 +195,19 @@ class RenderWorker(QThread):
                     self.kwargs.get("rotoscope_downsample"),
                     self.kwargs.get("text_animation_style", "Classic Wipe (Default)"),
                     "tiny" if "Fast" in str(self.kwargs.get("accuracy_level", "Fast")) else "small",
-                    self.kwargs.get("enable_3d_icons", True),
-                    self.kwargs.get("custom_3d_trigger_words", ""),
                     self.kwargs.get("enable_3d_parallax", False),
+                    self.kwargs.get("color_grade_style", "None"),
+                    self.kwargs.get("custom_lut_path", ""),
                     self.progress.emit
                 ]
-                output_path = render_video_gui(*args)
+                output_path = render_video_gui(
+                    *args,
+                    multi_preset_mode=self.kwargs.get("multi_preset_mode", "Single Preset (Disabled)"),
+                    multi_preset_pool=self.kwargs.get("multi_preset_pool", []),
+                    multi_preset_lock_alignment=self.kwargs.get("multi_preset_lock_alignment", True),
+                    multi_preset_unified_zoom=self.kwargs.get("multi_preset_unified_zoom", True),
+                    multi_preset_scale_font_size=self.kwargs.get("multi_preset_scale_font_size", 1.0)
+                )
                 output_paths.append(output_path)
             
             if is_batch:

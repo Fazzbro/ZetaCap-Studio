@@ -4,9 +4,6 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from project.ui.main_window import MainWindow
 from project.core.config import config
-from project.core.license_manager import LicenseManager
-from project.ui.activation_dialog import ActivationDialog
-from PySide6.QtWidgets import QDialog
 
 import logging
 
@@ -16,7 +13,7 @@ except ImportError:
     pass
 
 def setup_logging():
-    log_dir = os.path.join(os.path.expanduser("~"), ".tiny_word_editor_pro", "logs")
+    log_dir = os.path.join(os.path.expanduser("~"), ".zetacap", "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "zetacap.log")
     
@@ -57,16 +54,6 @@ def main():
             app.setStyleSheet(f.read())
     config.load()
     
-    # Check License
-    is_valid = False
-    if config.GUMROAD_LICENSE_KEY:
-        is_valid, _ = LicenseManager.verify_license(config.GUMROAD_LICENSE_KEY)
-        
-    if not is_valid:
-        dialog = ActivationDialog()
-        if dialog.exec() != QDialog.Accepted:
-            sys.exit(0)
-            
     window = MainWindow()
     window.show()
     

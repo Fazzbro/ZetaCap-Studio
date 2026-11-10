@@ -6,6 +6,7 @@ from PySide6.QtGui import QFont, QCursor
 
 from project.core.license_manager import LicenseManager
 from project.core.config import config
+from project.core.hardware_utils import get_hardware_id
 
 class ActivationDialog(QDialog):
     def __init__(self, parent=None):
@@ -54,7 +55,7 @@ class ActivationDialog(QDialog):
         layout.addWidget(self.cb_privacy)
         
         # Links label
-        links_label = QLabel("<a href='https://your-zetacap-website.netlify.app/terms' style='color:#FF7300;'>View Terms</a> &nbsp;|&nbsp; <a href='https://your-zetacap-website.netlify.app/privacy' style='color:#FF7300;'>View Privacy Policy</a>")
+        links_label = QLabel("<a href='https://ytpack.gumroad.com/l/zetacap' style='color:#FF7300;'>View Terms & Privacy Policy on Gumroad</a>")
         links_label.setOpenExternalLinks(True)
         links_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(links_label)
@@ -73,6 +74,14 @@ class ActivationDialog(QDialog):
         self.btn_activate.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_activate.clicked.connect(self._on_activate_clicked)
         btn_layout.addWidget(self.btn_activate)
+        
+        # Deactivate button (only shown if currently activated)
+        self.btn_deactivate = QPushButton("Deactivate (Free up seat)")
+        self.btn_deactivate.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_deactivate.clicked.connect(self._on_deactivate_clicked)
+        self.btn_deactivate.setStyleSheet("background-color: #552222; color: #ffcccc;")
+        self.btn_deactivate.setVisible(bool(config.GUMROAD_LICENSE_KEY))
+        btn_layout.addWidget(self.btn_deactivate)
         
         layout.addLayout(btn_layout)
 
@@ -158,7 +167,14 @@ class ActivationDialog(QDialog):
         self.btn_activate.setEnabled(False)
         self.repaint() # Force UI update
         
-        is_valid, msg = LicenseManager.verify_license(key)
+        # Hardware Locking Logic
+        current_hwid = get_hardware_id()
+        is_existing_device = (config.GUMROAD_LICENSE_KEY == key and config.ACTIVATED_HWID == current_hwid)
+        
+        # Only consume a new seat if this is a new device or a new key
+        increment_uses = not is_existing_device
+        
+        is_valid, msg = LicenseManager.verify_license(key, increment_uses_count=increment_uses)
         
         self.btn_activate.setText("Activate ZetaCap")
         self.btn_activate.setEnabled(True)
@@ -166,7 +182,38 @@ class ActivationDialog(QDialog):
         if is_valid:
             QMessageBox.information(self, "Success", msg)
             config.GUMROAD_LICENSE_KEY = key
+            config.ACTIVATED_HWID = current_hwid
             config.save()
             self.accept()
         else:
             QMessageBox.critical(self, "Activation Failed", msg)
+
+    def _on_deactivate_clicked(self):
+        key = config.GUMROAD_LICENSE_KEY
+        if not key:
+            return
+            
+        confirm = QMessageBox.question(
+            self, "Deactivate", 
+            "Are you sure you want to deactivate this device?\nThis will free up one seat on your Gumroad license.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            self.btn_deactivate.setText("Deactivating...")
+            self.btn_deactivate.setEnabled(False)
+            self.repaint()
+            
+            success = LicenseManager.decrement_license(key)
+            if success:
+                config.GUMROAD_LICENSE_KEY = ""
+                config.ACTIVATED_HWID = ""
+                config.save()
+                QMessageBox.information(self, "Success", "Device deactivated successfully. Your seat has been freed up.")
+                self.key_input.setText("")
+                self.btn_deactivate.setVisible(False)
+            else:
+                QMessageBox.warning(self, "Error", "Could not deactivate. Please check your connection or contact support.")
+            
+            self.btn_deactivate.setText("Deactivate (Free up seat)")
+            self.btn_deactivate.setEnabled(True)

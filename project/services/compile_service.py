@@ -67,18 +67,23 @@ def compile_video_sync(video_configs, music_path=None, music_volume=0.5):
     for i, cfg in enumerate(video_configs):
         clip = VideoFileClip(cfg['path'])
         dur = clip.duration
+        has_audio = (clip.audio is not None)
         clip.close()
         
         start = max(0, cfg['start'])
         end = cfg['end'] if cfg['end'] > 0 else dur
         end = min(end, dur)
+        seg_dur = max(0.01, end - start)
         
         if i < len(video_configs) - 1:
-            current_time += (end - start)
+            current_time += seg_dur
             cut_times.append(current_time)
             
         v_filter = f"[{i}:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,{transpose_filter}scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v{i}]"
-        a_filter = f"[{i}:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS,aresample=44100[a{i}]"
+        if has_audio:
+            a_filter = f"[{i}:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS,aresample=44100[a{i}]"
+        else:
+            a_filter = f"aevalsrc=0:d={seg_dur}:s=44100[a{i}]"
         
         filter_parts.append(v_filter)
         filter_parts.append(a_filter)

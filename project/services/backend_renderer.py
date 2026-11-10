@@ -1,6 +1,7 @@
 import sys
 import asyncio
 import warnings
+import uuid
 
 # Suppress noisy third-party library deprecation warnings (e.g. Starlette HTTP_422_UNPROCESSABLE_ENTITY deprecation)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -146,10 +147,14 @@ def apply_wipe_filter(clip, duration=0.3, feather_width=35):
     """Applies a smooth quadratic wipe transition from left to right with horizontal alpha feathering."""
     def fl_filter(get_frame, t):
         frame = get_frame(t)
+        if t >= duration:
+            return frame
         progress = min(t / duration, 1.0)
         progress = 1 - (1 - progress) ** 2  # Quadratic ease out
         w = frame.shape[1]
         current_w = int(w * progress)
+        if current_w >= w:
+            return frame
         new_frame = np.copy(frame)
         if current_w < w:
             feather_start = max(0, current_w - feather_width)
@@ -896,7 +901,12 @@ def generate_style_preview_gui(
     custom_roto_pos_y=0,
     rotoscope_start_sec=0.0,
     rotoscope_end_sec=3.0,
-    rotoscope_downsample="0.25 (Fastest / Recommended - 60 FPS)"
+    rotoscope_downsample="0.25 (Fastest / Recommended - 60 FPS)",
+    multi_preset_mode="Single Preset (Disabled)",
+    multi_preset_pool=None,
+    multi_preset_lock_alignment=True,
+    multi_preset_unified_zoom=True,
+    multi_preset_scale_font_size=1.0
 ):
     """Generates an instant high-res PNG style preview respecting all 3D Shiny Glow & Specular Gloss parameters and split modes."""
     canvas_w, canvas_h = 1080, 1920
@@ -955,28 +965,104 @@ def generate_style_preview_gui(
         if words_list:
             found_chunk = None
             found_chunk_data = None
-            for i in range(0, len(words_list), chunk_size):
+            matched_chunk_idx = 0
+            for c_idx, i in enumerate(range(0, len(words_list), chunk_size)):
                 c = words_list[i:i+chunk_size]
                 c_start = c[0]["start"]
                 c_end = c[-1]["end"]
                 # Match chunks that overlap with the preview timestamp, adding a 0.1s padding.
-                # If timestamp is exactly on the boundary, prefer the chunk starting at this time.
                 if c_start - 0.01 <= preview_timestamp <= (c_end + 0.1):
                     if found_chunk is None or preview_timestamp >= (c_start - 0.01):
                         found_chunk = [w["text"] for w in c]
                         found_chunk_data = c
+                        matched_chunk_idx = c_idx
             
             if not found_chunk and preview_timestamp == 0.0:
                 found_chunk = [w["text"] for w in words_list[:chunk_size]]
                 found_chunk_data = words_list[:chunk_size]
+                matched_chunk_idx = 0
             elif not found_chunk:
                 found_chunk = []
                 found_chunk_data = []
+                matched_chunk_idx = 0
                 
             chunk = found_chunk
     
     if not chunk and (not words_table or len(words_table) == 0):
-        chunk = sample_words[:chunk_size]    
+        chunk = sample_words[:chunk_size]
+        matched_chunk_idx = 0
+
+    # Multi-Preset Style Resolution for Live Preview (Active for 1 or more pool presets)
+    if multi_preset_pool and len(multi_preset_pool) > 0:
+        try:
+            from project.services.preset_choreographer import PresetChoreographer
+            master_defaults = {
+                "font_preset_dropdown": font_preset_choice, "font_upload": font_file,
+                "multi_font_mode": multi_font_mode, "font_preset_choice_2": font_preset_choice_2, "font_file_2": font_file_2,
+                "font_size_slider": font_size, "bottom_font_size_slider": bottom_font_size,
+                "show_shadow": show_shadow, "shadow_depth": shadow_depth, "shadow_step_x": shadow_step_x, "shadow_step_y": shadow_step_y,
+                "sheen_3d_scope": sheen_3d_scope, "gloss_intensity": gloss_intensity,
+                "t1_top": t1_top_hex, "t1_mid": t1_mid_hex, "t1_bot": t1_bot_hex, "t1_shadow": t1_shadow_hex,
+                "t2_top": t2_top_hex, "t2_mid": t2_mid_hex, "t2_bot": t2_bot_hex, "t2_shadow": t2_shadow_hex,
+                "show_glow": show_glow, "t1_glow": t1_glow_hex, "t2_glow": t2_glow_hex, "glow_strength": glow_strength,
+                "bg_box_enable": bg_box_enable, "bg_box_color": bg_box_color,
+                "lines_mode_dropdown": lines_per_caption, "line_spacing_scale": line_spacing_scale,
+                "vertical_alignment": vertical_alignment, "pos_offset_x": pos_offset_x, "pos_offset_y": pos_offset_y
+            }
+            choreographer = PresetChoreographer(
+                preset_pool=multi_preset_pool,
+                mode=multi_preset_mode,
+                lock_alignment=multi_preset_lock_alignment,
+                unified_zoom=multi_preset_unified_zoom,
+                master_defaults=master_defaults
+            )
+            all_chunks_for_plan = []
+            if 'words_list' in locals() and words_list:
+                for i in range(0, len(words_list), chunk_size):
+                    all_chunks_for_plan.append(words_list[i:i+chunk_size])
+            else:
+                all_chunks_for_plan = [[{"text": w, "start": 0, "end": 1} for w in chunk]]
+            
+            choreographer.plan_schedule(all_chunks_for_plan)
+            res_style = choreographer.get_style_for_chunk(matched_chunk_idx, fallback_settings=master_defaults)
+            
+            font_preset_choice = res_style.get("font_preset_dropdown", font_preset_choice)
+            font_file = res_style.get("font_upload", font_file)
+            multi_font_mode = res_style.get("multi_font_mode", multi_font_mode)
+            font_preset_choice_2 = res_style.get("font_preset_choice_2", font_preset_choice_2)
+            font_file_2 = res_style.get("font_file_2", font_file_2)
+            font_size = res_style.get("font_size_slider", font_size)
+            FONT_SIZE = int(font_size)
+            bottom_font_size = res_style.get("bottom_font_size_slider", bottom_font_size)
+            show_shadow = res_style.get("show_shadow", show_shadow)
+            shadow_depth = res_style.get("shadow_depth", shadow_depth)
+            shadow_step_x = res_style.get("shadow_step_x", shadow_step_x)
+            shadow_step_y = res_style.get("shadow_step_y", shadow_step_y)
+            sheen_3d_scope = res_style.get("sheen_3d_scope", sheen_3d_scope)
+            gloss_intensity = res_style.get("gloss_intensity", gloss_intensity)
+            t1_top_hex = res_style.get("t1_top", t1_top_hex)
+            t1_mid_hex = res_style.get("t1_mid", t1_mid_hex)
+            t1_bot_hex = res_style.get("t1_bot", t1_bot_hex)
+            t1_shadow_hex = res_style.get("t1_shadow", t1_shadow_hex)
+            t2_top_hex = res_style.get("t2_top", t2_top_hex)
+            t2_mid_hex = res_style.get("t2_mid", t2_mid_hex)
+            t2_bot_hex = res_style.get("t2_bot", t2_bot_hex)
+            t2_shadow_hex = res_style.get("t2_shadow", t2_shadow_hex)
+            show_glow = res_style.get("show_glow", show_glow)
+            t1_glow_hex = res_style.get("t1_glow", t1_glow_hex)
+            t2_glow_hex = res_style.get("t2_glow", t2_glow_hex)
+            glow_strength = res_style.get("glow_strength", glow_strength)
+            bg_box_enable = res_style.get("bg_box_enable", bg_box_enable)
+            bg_box_color = res_style.get("bg_box_color", bg_box_color)
+            lines_per_caption = res_style.get("lines_mode_dropdown", lines_per_caption)
+            line_spacing_scale = res_style.get("line_spacing_scale", line_spacing_scale)
+            if not multi_preset_lock_alignment:
+                vertical_alignment = res_style.get("vertical_alignment", vertical_alignment)
+                pos_offset_x = res_style.get("pos_offset_x", pos_offset_x)
+                pos_offset_y = res_style.get("pos_offset_y", pos_offset_y)
+        except Exception as pe:
+            print(f"[PresetChoreographer Preview Warn] {pe}")
+
     def format_caption_text(s):
         s = s.strip()
         if not s:
@@ -1440,34 +1526,47 @@ def apply_auto_zoom_to_clip(clip, intervals, zoom_factor, zoom_frequency, zoom_t
 
     return clip.transform(fl)
 
-def apply_dynamic_face_tracking(clip, video_path, face_detector_model, canvas_w, canvas_h, tracking_mode="Auto-Zoom to Fill Voids (Method B)", tracking_smoothness=15, start_time=0.0, end_time=0.0):
+def _smootherstep(u):
+    u = max(0.0, min(1.0, float(u)))
+    return u * u * u * (u * (u * 6.0 - 15.0) + 10.0)
+
+def _gaussian_smooth_1d(arr, sigma):
+    import numpy as np
+    import math
+    if len(arr) <= 1 or sigma <= 0.1:
+        return arr
+    radius = max(1, int(math.ceil(3 * sigma)))
+    x = np.arange(-radius, radius + 1)
+    kernel = np.exp(-0.5 * (x / sigma) ** 2)
+    kernel /= kernel.sum()
+    pad_left = np.full(radius, arr[0])
+    pad_right = np.full(radius, arr[-1])
+    padded = np.concatenate([pad_left, arr, pad_right])
+    smoothed = np.convolve(padded, kernel, mode='valid')
+    return smoothed
+
+def apply_dynamic_face_tracking(clip, video_path, face_detector_model, canvas_w, canvas_h, tracking_mode="Cinematic Fluid Gimbal (Pro Steadicam)", tracking_smoothness=15, start_time=0.0, end_time=0.0):
     """
-    Applies continuous, smoothed face tracking using MediaPipe and Exponential Moving Average (EMA).
+    Applies pro-editor dynamic camera tracking according to head movements:
+    - Responsive speed head tracking (agile follow with motion amplification)
+    - Head tilt & roll compensation (angles camera with head tilt)
+    - Rule-of-thirds eye-line framing (35% height anchor, eliminates vertical clamping)
+    - Sub-pixel affine warping & rotation (zero coordinate truncation jitter)
+    - 0.5s smootherstep ease-in push-in and ease-out pull-back transitions
     """
     import cv2
     import numpy as np
     import mediapipe.python.solutions.face_detection as mp_face_detection
     import os
+    import math
     
     if clip is None or not os.path.exists(video_path):
         return clip
 
-    # Optional base zoom to ensure we have a margin. 
-    BASE_ZOOM = 1.15
-    EMA_ALPHA = 0.12 # Base EMA. Can be mapped to tracking_smoothness later if desired.
-
-    # 1. Pre-calculate face centers for ALL frames using MediaPipe
-    
     fps = clip.fps if hasattr(clip, 'fps') and clip.fps else 30
     dur = float(clip.duration)
-    total_frames = int(dur * fps)
+    total_frames = max(1, int(dur * fps))
     
-    # Store precalculated bounding box variables
-    trajectory = []
-    prev_smooth_x = None
-    prev_smooth_y = None
-    
-    # Read the video using OpenCV to do the pre-pass
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return clip
@@ -1475,105 +1574,202 @@ def apply_dynamic_face_tracking(clip, video_path, face_detector_model, canvas_w,
     vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    print(f"[AI Studio] Dynamic Tracking: Pre-calculating EMA for ~{total_frames} frames...", flush=True)
+    # 0.50s crisp ease-in / ease-out transition
+    TRANS_DUR = 0.50
+    
+    # Determine tracking active window
+    is_full_video = (start_time <= 0.0 and end_time <= 0.0)
+    effective_start = 0.0 if is_full_video else max(0.0, float(start_time))
+    effective_end = dur if is_full_video else min(dur, float(end_time))
+    if effective_end <= effective_start:
+        effective_end = dur
 
-    with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_detection.process(rgb_frame)
+    # Detection bounds with buffer around transitions
+    detect_start_t = max(0.0, effective_start - TRANS_DUR - 0.5) if not is_full_video else 0.0
+    detect_end_t = min(dur, effective_end + TRANS_DUR + 0.5) if not is_full_video else dur
+    
+    detect_start_f = max(0, min(total_frames - 1, int(detect_start_t * fps)))
+    detect_end_f = max(detect_start_f + 1, min(total_frames, int(detect_end_t * fps)))
+    
+    frames_to_detect = detect_end_f - detect_start_f
+    print(f"[AI Studio] Dynamic Head Tracking: Analyzing {frames_to_detect} frames (t={detect_start_t:.1f}s to {detect_end_t:.1f}s, mode='{tracking_mode}')...", flush=True)
+
+    # 1. Pre-detect raw face positions & head tilt angles
+    raw_detections = {} # frame_idx -> (cx, cy, ang)
+    default_cx = vid_w / 2.0
+    default_cy = vid_h * 0.38
+    default_ang = 0.0
+
+    if frames_to_detect > 0:
+        if detect_start_f > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, detect_start_f)
             
-            if results.detections:
-                detection = results.detections[0]
-                bboxC = detection.location_data.relative_bounding_box
-                target_x = int((bboxC.xmin + bboxC.width / 2) * vid_w)
-                target_y = int((bboxC.ymin + bboxC.height / 2) * vid_h)
-            else:
-                if prev_smooth_x is not None:
-                    target_x = prev_smooth_x
-                    target_y = prev_smooth_y
-                else:
-                    target_x = vid_w // 2
-                    target_y = vid_h // 2
+        with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
+            proc_w = 480
+            proc_h = max(1, int(proc_w * vid_h / vid_w))
+            current_f = detect_start_f
+            
+            while cap.isOpened() and current_f < detect_end_f:
+                ret, frame = cap.read()
+                if not ret:
+                    break
                     
-            if prev_smooth_x is None:
-                smooth_x = target_x
-                smooth_y = target_y
-            else:
-                smooth_x = (EMA_ALPHA * target_x) + ((1 - EMA_ALPHA) * prev_smooth_x)
-                smooth_y = (EMA_ALPHA * target_y) + ((1 - EMA_ALPHA) * prev_smooth_y)
+                small_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_LINEAR)
+                rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                results = face_detection.process(rgb_frame)
                 
-            prev_smooth_x = smooth_x
-            prev_smooth_y = smooth_y
-            
-            trajectory.append((smooth_x, smooth_y))
-            
+                if results.detections:
+                    detection = results.detections[0]
+                    bboxC = detection.location_data.relative_bounding_box
+                    cx = (bboxC.xmin + bboxC.width / 2.0) * vid_w
+                    cy = (bboxC.ymin + bboxC.height * 0.38) * vid_h
+                    
+                    # Calculate head tilt angle from eye keypoints
+                    ang = 0.0
+                    try:
+                        kps = detection.location_data.relative_keypoints
+                        if len(kps) >= 2:
+                            re, le = kps[0], kps[1]
+                            ang = math.degrees(math.atan2((le.y - re.y) * vid_h, (le.x - re.x) * vid_w))
+                    except Exception:
+                        pass
+                        
+                    raw_detections[current_f] = (cx, cy, ang)
+                current_f += 1
+                
     cap.release()
 
-    if not trajectory:
-        return clip
+    # 2. Fill missing detections with smooth forward carry
+    filled_cx = np.zeros(total_frames, dtype=np.float32)
+    filled_cy = np.zeros(total_frames, dtype=np.float32)
+    filled_ang = np.zeros(total_frames, dtype=np.float32)
+    
+    last_known_cx = default_cx
+    last_known_cy = default_cy
+    last_known_ang = default_ang
+    
+    if raw_detections:
+        first_f = min(raw_detections.keys())
+        last_known_cx, last_known_cy, last_known_ang = raw_detections[first_f]
 
+    for f in range(total_frames):
+        if f in raw_detections:
+            last_known_cx, last_known_cy, last_known_ang = raw_detections[f]
+        filled_cx[f] = last_known_cx
+        filled_cy[f] = last_known_cy
+        filled_ang[f] = last_known_ang
+
+    # 3. Responsive Smoothing & Motion Amplification
+    smoothness_val = max(1, min(30, int(tracking_smoothness)))
+    # Agile sigma ~ 1.5 to 4.5 frames (approx 0.05s to 0.15s) for snappy speed head response!
+    sigma = max(1.5, float(smoothness_val) * 0.25)
+    smooth_cx = _gaussian_smooth_1d(filled_cx, sigma)
+    smooth_cy = _gaussian_smooth_1d(filled_cy, sigma)
+    smooth_ang = _gaussian_smooth_1d(filled_ang, sigma)
+
+    # Compute neutral anchor position across tracking window
+    start_f = max(0, int(effective_start * fps))
+    end_f = min(total_frames, int(effective_end * fps))
+    if end_f > start_f:
+        neutral_x = float(np.mean(filled_cx[start_f:end_f]))
+        neutral_y = float(np.mean(filled_cy[start_f:end_f]))
+        neutral_ang = float(np.mean(filled_ang[start_f:end_f]))
+    else:
+        neutral_x = default_cx
+        neutral_y = default_cy
+        neutral_ang = 0.0
+
+    # Motion Amplification Gain:
+    # Amplifies subtle head shifts and bobs so the camera reacts dynamically with speed!
+    gain = 1.45
+    amp_cx = neutral_x + gain * (smooth_cx - neutral_x)
+    amp_cy = neutral_y + gain * (smooth_cy - neutral_y)
+    amp_ang = 0.35 * (smooth_ang - neutral_ang) # subtle dynamic roll, max +-2.5 deg
+
+    # 4. Pro-Editor Camera Trajectory Generation
+    base_zoom = 1.34 # Crisp, noticeable framing zoom
+    cam_trajectory = [] # (zoom, cam_cx, cam_cy, cam_ang, alpha)
+
+    for f in range(total_frames):
+        t = f / fps
+        
+        # Calculate transition alpha in [0.0, 1.0] using cubic smootherstep
+        if is_full_video:
+            if t < TRANS_DUR:
+                u = t / TRANS_DUR
+                alpha = u * u * (3.0 - 2.0 * u)
+            else:
+                alpha = 1.0
+        else:
+            if t < effective_start:
+                if t >= effective_start - TRANS_DUR:
+                    u = (t - (effective_start - TRANS_DUR)) / TRANS_DUR
+                    alpha = u * u * (3.0 - 2.0 * u)
+                else:
+                    alpha = 0.0
+            elif t <= effective_end:
+                alpha = 1.0
+            elif t <= effective_end + TRANS_DUR:
+                u = 1.0 - (t - effective_end) / TRANS_DUR
+                alpha = u * u * (3.0 - 2.0 * u)
+            else:
+                alpha = 0.0
+                
+        if alpha <= 0.0001:
+            cam_trajectory.append((1.0, vid_w / 2.0, vid_h / 2.0, 0.0, 0.0))
+            continue
+
+        current_zoom = 1.0 + (base_zoom - 1.0) * alpha
+        crop_w = vid_w / current_zoom
+        crop_h = vid_h / current_zoom
+        
+        # Rule of thirds eye-line framing (35% from top of cropped viewport)
+        target_cy = amp_cy[f] + 0.15 * crop_h
+        target_cx = amp_cx[f]
+        target_ang = amp_ang[f]
+        
+        # Blend from wide center to dynamic head target
+        cur_cx = (vid_w / 2.0) + (target_cx - (vid_w / 2.0)) * alpha
+        cur_cy = (vid_h / 2.0) + (target_cy - (vid_h / 2.0)) * alpha
+        cur_ang = target_ang * alpha
+        
+        # Safety Clamping
+        cur_cx = max(crop_w / 2.0, min(vid_w - crop_w / 2.0, cur_cx))
+        cur_cy = max(crop_h / 2.0, min(vid_h - crop_h / 2.0, cur_cy))
+        cur_ang = max(-2.5, min(2.5, cur_ang))
+        
+        cam_trajectory.append((current_zoom, cur_cx, cur_cy, cur_ang, alpha))
+
+    print(f"[AI Studio] Dynamic Head Tracking ready: {len(cam_trajectory)} trajectory points generated.", flush=True)
+
+    # 5. High-Precision Sub-Pixel Affine Warper with Dynamic Tilt
     def fl(get_frame, t):
         frame = get_frame(t)
         if frame is None:
             return frame
 
         fh, fw = frame.shape[:2]
+        frame_idx = int(t * fps)
+        frame_idx = max(0, min(len(cam_trajectory) - 1, frame_idx))
         
-        # Calculate current scale if we were to fit height/width
-        scale_x = canvas_w / float(fw)
-        scale_y = canvas_h / float(fh)
-        base_scale = max(scale_x, scale_y) # fit to fill
+        zoom, cx, cy, ang, alpha = cam_trajectory[frame_idx]
         
-        # Check if we should apply tracking for this frame
-        apply_tracking = True
-        if start_time > 0.0 and t < start_time:
-            apply_tracking = False
-        if end_time > 0.0 and t > end_time:
-            apply_tracking = False
-            
-        if apply_tracking:
-            # Calculate crop dimensions based on the BASE_ZOOM
-            crop_w = int(canvas_w / (base_scale * BASE_ZOOM))
-            crop_h = int(canvas_h / (base_scale * BASE_ZOOM))
-            
-            crop_w = min(fw, max(1, crop_w))
-            crop_h = min(fh, max(1, crop_h))
+        if alpha <= 0.0001 or (zoom <= 1.0005 and abs(ang) < 0.01):
+            if fw == canvas_w and fh == canvas_h:
+                return frame
+            return cv2.resize(frame, (canvas_w, canvas_h), interpolation=cv2.INTER_LINEAR)
 
-            # Look up the pre-calculated EMA coordinates for this specific frame
-            frame_idx = int(t * fps)
-            frame_idx = max(0, min(len(trajectory) - 1, frame_idx))
-            smooth_x, smooth_y = trajectory[frame_idx]
+        # Scale coordinates if frame dimensions differ from vid dimensions
+        scale_x = float(fw) / float(vid_w)
+        scale_y = float(fh) / float(vid_h)
+        adj_cx = cx * scale_x
+        adj_cy = cy * scale_y
 
-            # Calculate ideal top-left coordinate to keep face perfectly centered
-            ideal_x1 = int(smooth_x - (crop_w / 2.0))
-            ideal_y1 = int(smooth_y - (crop_h / 2.0))
-        else:
-            # Standard center crop (no zoom, no face tracking)
-            crop_w = int(canvas_w / base_scale)
-            crop_h = int(canvas_h / base_scale)
-            
-            crop_w = min(fw, max(1, crop_w))
-            crop_h = min(fh, max(1, crop_h))
-            
-            ideal_x1 = int((fw - crop_w) / 2.0)
-            ideal_y1 = int((fh - crop_h) / 2.0)
-            
-        # Strict Edge Clamping
-        clamped_x1 = max(0, min(fw - crop_w, ideal_x1))
-        clamped_y1 = max(0, min(fh - crop_h, ideal_y1))
-        
-        clamped_x2 = clamped_x1 + crop_w
-        clamped_y2 = clamped_y1 + crop_h
-
-        cropped = frame[clamped_y1:clamped_y2, clamped_x1:clamped_x2]
-        
-        # Resize back to canvas dimensions
         try:
-            return cv2.resize(cropped, (canvas_w, canvas_h), interpolation=cv2.INTER_LINEAR)
+            M = cv2.getRotationMatrix2D((adj_cx, adj_cy), ang, zoom)
+            M[0, 2] += (float(canvas_w) / 2.0 - adj_cx)
+            M[1, 2] += (float(canvas_h) / 2.0 - adj_cy)
+            return cv2.warpAffine(frame, M, (canvas_w, canvas_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
         except Exception:
             return frame
 
@@ -1830,7 +2026,7 @@ def transcribe_and_extract_words_gui(video_path, audio_path, audio_aspect_ratio,
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     output_dir = config.OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)
-    temp_audio = os.path.join(output_dir, "temp_gui_audio_review.wav")
+    temp_audio = os.path.join(output_dir, f"temp_gui_audio_review_{uuid.uuid4().hex[:8]}.wav")
     media_clip = None
     
     if has_video:
@@ -1903,21 +2099,28 @@ def transcribe_and_extract_words_gui(video_path, audio_path, audio_aspect_ratio,
 def resolve_and_load_sfx_clip(sfx_preset, sfx_upload, volume=0.30):
     """Safely resolves the SFX preset or upload path, sanitizing chapters if necessary to avoid MoviePy IndexError."""
     sfx_path = None
-    if sfx_upload and os.path.exists(str(sfx_upload)):
-        sfx_path = str(sfx_upload)
-    elif str(sfx_preset) != "None":
-        sfx_path = None
-        if "Mixkit Modern Technology" in str(sfx_preset):
+    
+    # 1. Check direct file paths first (from either sfx_upload or sfx_preset)
+    for candidate in [sfx_upload, sfx_preset]:
+        if candidate and isinstance(candidate, (str, bytes)):
+            cand_str = str(candidate).strip().strip('"').strip("'")
+            if cand_str and cand_str.lower() != "none" and os.path.exists(cand_str) and os.path.isfile(cand_str):
+                sfx_path = os.path.abspath(cand_str)
+                print(f"[AI Studio] Custom SFX file resolved: '{sfx_path}'", flush=True)
+                break
+
+    # 2. If not a direct file path, check built-in preset strings
+    if not sfx_path and sfx_preset and str(sfx_preset).lower() != "none":
+        preset_str = str(sfx_preset)
+        if "Mixkit Modern Technology" in preset_str:
             sfx_path = get_bundled_path(os.path.join("assets", "mixkit-modern-technology-select-3124.wav"), r"d:\Python_Projects\captions\project\assets\mixkit-modern-technology-select-3124.wav")
-        elif "Motion Design AfterEffects Pop" in str(sfx_preset):
+        elif "Motion Design AfterEffects Pop" in preset_str:
             sfx_path = get_bundled_path(os.path.join("assets", "hi-sfx-aftereffects-videoediting-motiondesign-motiongraphi_49nxh1eV (1).mp3"), r"d:\Python_Projects\captions\project\assets\hi-sfx-aftereffects-videoediting-motiondesign-motiongraphi_49nxh1eV (1).mp3")
-        elif "UI Caption Accent" in str(sfx_preset):
+        elif "UI Caption Accent" in preset_str:
             sfx_path = get_bundled_path(os.path.join("assets", "ui cap.mp3"), r"d:\Python_Projects\captions\project\assets\ui cap.mp3")
-    else:
-        return None
 
     if not sfx_path or not os.path.exists(sfx_path):
-        print(f"[AI Studio] Warning: SFX file not found at '{sfx_path}'", flush=True)
+        print(f"[AI Studio] Warning: SFX file not found for preset='{sfx_preset}', upload='{sfx_upload}'", flush=True)
         return None
 
     try:
@@ -2087,10 +2290,15 @@ shadow_depth,
     rotoscope_downsample="0.25 (Fastest / Recommended - 60 FPS)",
     text_animation_style="Classic Wipe (Default)",
     transcription_model="tiny",
-    enable_3d_icons=True,
-    custom_3d_trigger_words="",
     enable_3d_parallax=False,
-    progress=None
+    color_grade_style="None",
+    custom_lut_path="",
+    progress=None,
+    multi_preset_mode="Single Preset (Disabled)",
+    multi_preset_pool=None,
+    multi_preset_lock_alignment=True,
+    multi_preset_unified_zoom=True,
+    multi_preset_scale_font_size=1.0
 ):
     has_video = video_path is not None and os.path.exists(str(video_path))
     has_audio = audio_path is not None and os.path.exists(str(audio_path))
@@ -2113,7 +2321,7 @@ shadow_depth,
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     output_dir = config.OUTPUT_DIR
     os.makedirs(output_dir, exist_ok=True)
-    temp_audio = os.path.join(output_dir, "temp_gui_audio.wav")
+    temp_audio = os.path.join(output_dir, f"temp_gui_audio_{uuid.uuid4().hex[:8]}.wav")
     media_clip = None
     
     if use_edited_words:
@@ -2235,6 +2443,9 @@ shadow_depth,
                 media_clip.close()
             raise ValueError("Burn-In mode requires Option A: Source Video upload! You uploaded an Audio file (Option B). Please choose Green Screen export.")
         base_bg = media_clip
+        if color_grade_style and color_grade_style != "None":
+            from project.services.color_grading import apply_color_grade
+            base_bg = apply_color_grade(base_bg, color_grade_style, custom_lut_path)
     else:
         # Default: Chroma Key Green Screen
         base_bg = ColorClip(size=(canvas_w, canvas_h), color=(0, 255, 0), duration=duration)
@@ -2253,7 +2464,7 @@ shadow_depth,
                 intervals.append({"start": start_time, "end": end_time})
 
     if enable_auto_zoom and has_video and base_bg is not None and "Burn directly" in str(output_mode) and intervals and not enable_dynamic_tracking:
-        print(f"[AI Studio] Step 3.5: Detecting face centers across {len(intervals)} caption blocks using {face_detector_model} on D drive...", flush=True)
+        print(f"[AI Studio] Step 3.5: Detecting face centers across {len(intervals)} caption blocks using {face_detector_model}...", flush=True)
         if progress: progress(0.35, "Tracking Faces & Choreographing Occasional Auto-Zoom...")
         intervals = detect_face_centers_for_intervals(str(video_path), intervals, face_detector_model, canvas_w, canvas_h)
         base_bg = apply_auto_zoom_to_clip(base_bg, intervals, zoom_factor, zoom_frequency, zoom_transition_style, canvas_w, canvas_h, min_cooldown_slider, zoom_hold_slider)
@@ -2305,6 +2516,43 @@ shadow_depth,
     T2_MID = hex_to_rgb(t2_mid_hex)
     T2_BOT = hex_to_rgb(t2_bot_hex)
     T2_3D = t2_shadow_hex
+
+    # Initialize Master Defaults & Preset Choreographer
+    master_defaults = {
+        "font_preset_dropdown": font_preset_choice, "font_upload": font_file,
+        "multi_font_mode": multi_font_mode, "font_preset_choice_2": font_preset_choice_2, "font_file_2": font_file_2,
+        "font_size_slider": font_size, "bottom_font_size_slider": bottom_font_size,
+        "show_shadow": show_shadow, "shadow_depth": shadow_depth, "shadow_step_x": shadow_step_x, "shadow_step_y": shadow_step_y,
+        "sheen_3d_scope": sheen_3d_scope, "gloss_intensity": gloss_intensity,
+        "t1_top": t1_top_hex, "t1_mid": t1_mid_hex, "t1_bot": t1_bot_hex, "t1_shadow": t1_shadow_hex,
+        "t2_top": t2_top_hex, "t2_mid": t2_mid_hex, "t2_bot": t2_bot_hex, "t2_shadow": t2_shadow_hex,
+        "show_glow": show_glow, "t1_glow": t1_glow_hex, "t2_glow": t2_glow_hex, "glow_strength": glow_strength,
+        "bg_box_enable": bg_box_enable, "bg_box_color": bg_box_color,
+        "lines_mode_dropdown": lines_per_caption, "line_spacing_scale": line_spacing_scale,
+        "vertical_alignment": vertical_alignment, "pos_offset_x": pos_offset_x, "pos_offset_y": pos_offset_y,
+        "random_brush_highlights": random_brush_highlights, "text_animation_style": text_animation_style
+    }
+    
+    from project.services.preset_choreographer import PresetChoreographer
+    choreographer = PresetChoreographer(
+        preset_pool=multi_preset_pool,
+        mode=multi_preset_mode,
+        lock_alignment=multi_preset_lock_alignment,
+        unified_zoom=multi_preset_unified_zoom,
+        master_defaults=master_defaults
+    )
+    
+    all_chunks_for_plan = []
+    c_size_plan = max(1, int(max_words_per_chunk))
+    for seg in segments:
+        w_list = seg.get("words", [])
+        if w_list:
+            for i in range(0, len(w_list), c_size_plan):
+                all_chunks_for_plan.append(w_list[i:i+c_size_plan])
+                
+    choreographer.plan_schedule(all_chunks_for_plan)
+    if choreographer.is_active:
+        print(f"[AI Studio] Multi-Preset Choreography active: {len(choreographer.presets)} presets alternating via '{multi_preset_mode}' across {len(all_chunks_for_plan)} chunks.", flush=True)
     
     def format_caption_text(s):
         s = s.strip()
@@ -2321,7 +2569,6 @@ shadow_depth,
             
         chunk_size = max(1, int(max_words_per_chunk))
         char_limit = max(10, int(max_chars_per_line))
-        is_single_line = ("single" in str(lines_per_caption).lower() or "1 line" in str(lines_per_caption).lower())
 
         for i in range(0, len(words_list), chunk_size):
             chunk = words_list[i:i+chunk_size]
@@ -2332,6 +2579,16 @@ shadow_depth,
                 chunk_duration = 0.1
                 
             chunk_counter += 1
+            chunk_idx = i // chunk_size
+            
+            # Resolve dynamic preset style for this specific chunk FIRST
+            c_style = choreographer.get_style_for_chunk(chunk_counter - 1, fallback_settings=master_defaults)
+            
+            # Dynamically determine line mode for THIS specific chunk
+            curr_c_lines_mode = c_style.get("lines_mode_dropdown", lines_per_caption)
+            chunk_is_single_line = ("single" in str(curr_c_lines_mode).lower() or "1 line" in str(curr_c_lines_mode).lower())
+            curr_char_limit = int(c_style.get("max_chars_slider", c_style.get("max_chars_per_line", char_limit)))
+            
             if enable_sfx and sfx_base_clip is not None:
                 should_trigger = False
                 if "Every Single Word" in str(sfx_trigger_mode):
@@ -2361,7 +2618,7 @@ shadow_depth,
                     sfx_clips_list.append(sfx_inst)
                     last_sfx_time = start_time
                 
-            if is_single_line:
+            if chunk_is_single_line:
                 word1_words = chunk
                 word2_words = []
                 word1_text = format_caption_text(" ".join(w["text"].strip() for w in word1_words))
@@ -2384,7 +2641,7 @@ shadow_depth,
                     for mid in range(1, len(total_words)):
                         l1 = " ".join(total_words[:mid])
                         l2 = " ".join(total_words[mid:])
-                        if len(l1) > char_limit and mid > 1:
+                        if len(l1) > curr_char_limit and mid > 1:
                             continue
                         diff = abs(len(l1) - len(l2))
                         if diff < min_diff:
@@ -2395,22 +2652,56 @@ shadow_depth,
                     word1_text = format_caption_text(" ".join(w["text"].strip() for w in word1_words))
                     word2_text = format_caption_text(" ".join(w["text"].strip() for w in word2_words))
             
-            chunk_idx = i // chunk_size
-            if "Chunk-Wise Alternation" in str(multi_font_mode) and chunk_idx % 2 == 1:
-                curr_font_choice_1 = font_preset_choice_2 if font_preset_choice_2 != "Same as Primary Font (Single Font Mode)" else font_preset_choice
-                curr_font_file_1 = font_file_2 if "Custom Uploaded" in str(font_preset_choice_2) else font_file
+            curr_c_font_1 = c_style.get("font_preset_dropdown", font_preset_choice)
+            curr_c_font_file_1 = c_style.get("font_upload", font_file)
+            curr_c_multi_font = c_style.get("multi_font_mode", multi_font_mode)
+            curr_c_font_2 = c_style.get("font_preset_choice_2", font_preset_choice_2)
+            curr_c_font_file_2 = c_style.get("font_file_2", font_file_2)
+            
+            curr_c_font_size = int(c_style.get("font_size_slider", font_size))
+            curr_c_bot_font_size = int(c_style.get("bottom_font_size_slider", bottom_font_size))
+            
+            curr_c_show_shadow = c_style.get("show_shadow", show_shadow)
+            curr_c_shadow_depth = int(c_style.get("shadow_depth", shadow_depth))
+            curr_c_shadow_step_x = int(c_style.get("shadow_step_x", shadow_step_x))
+            curr_c_shadow_step_y = int(c_style.get("shadow_step_y", shadow_step_y))
+            curr_c_sheen_scope = c_style.get("sheen_3d_scope", sheen_3d_scope)
+            curr_c_gloss_int = float(c_style.get("gloss_intensity", gloss_intensity))
+            
+            curr_c_t1_top = c_style.get("t1_top", t1_top_hex)
+            curr_c_t1_mid = c_style.get("t1_mid", t1_mid_hex)
+            curr_c_t1_bot = c_style.get("t1_bot", t1_bot_hex)
+            curr_c_t1_shadow = c_style.get("t1_shadow", t1_shadow_hex)
+            
+            curr_c_t2_top = c_style.get("t2_top", t2_top_hex)
+            curr_c_t2_mid = c_style.get("t2_mid", t2_mid_hex)
+            curr_c_t2_bot = c_style.get("t2_bot", t2_bot_hex)
+            curr_c_t2_shadow = c_style.get("t2_shadow", t2_shadow_hex)
+            
+            curr_c_show_glow = c_style.get("show_glow", show_glow)
+            curr_c_t1_glow = c_style.get("t1_glow", t1_glow_hex)
+            curr_c_t2_glow = c_style.get("t2_glow", t2_glow_hex)
+            curr_c_glow_strength = float(c_style.get("glow_strength", glow_strength))
+            
+            curr_c_bg_box = c_style.get("bg_box_enable", bg_box_enable)
+            curr_c_bg_box_color = c_style.get("bg_box_color", bg_box_color)
+            curr_c_line_spacing = float(c_style.get("line_spacing_scale", line_spacing_scale))
+
+            if "Chunk-Wise Alternation" in str(curr_c_multi_font) and chunk_idx % 2 == 1:
+                curr_font_choice_1 = curr_c_font_2 if curr_c_font_2 != "Same as Primary Font (Single Font Mode)" else curr_c_font_1
+                curr_font_file_1 = curr_c_font_file_2 if "Custom Uploaded" in str(curr_c_font_2) else curr_c_font_file_1
                 curr_font_choice_2 = curr_font_choice_1
                 curr_font_file_2 = curr_font_file_1
-            elif "Line-Wise Contrast" in str(multi_font_mode) or "Alternating" in str(multi_font_mode):
-                curr_font_choice_1 = font_preset_choice
-                curr_font_file_1 = font_file
-                curr_font_choice_2 = font_preset_choice_2 if font_preset_choice_2 != "Same as Primary Font (Single Font Mode)" else font_preset_choice
-                curr_font_file_2 = font_file_2 if "Custom Uploaded" in str(font_preset_choice_2) else font_file
+            elif "Line-Wise Contrast" in str(curr_c_multi_font) or "Alternating" in str(curr_c_multi_font):
+                curr_font_choice_1 = curr_c_font_1
+                curr_font_file_1 = curr_c_font_file_1
+                curr_font_choice_2 = curr_c_font_2 if curr_c_font_2 != "Same as Primary Font (Single Font Mode)" else curr_c_font_1
+                curr_font_file_2 = curr_c_font_file_2 if "Custom Uploaded" in str(curr_c_font_2) else curr_c_font_file_1
             else:
-                curr_font_choice_1 = font_preset_choice
-                curr_font_file_1 = font_file
-                curr_font_choice_2 = font_preset_choice_2 if font_preset_choice_2 != "Same as Primary Font (Single Font Mode)" else font_preset_choice
-                curr_font_file_2 = font_file_2 if "Custom Uploaded" in str(font_preset_choice_2) else font_file
+                curr_font_choice_1 = curr_c_font_1
+                curr_font_file_1 = curr_c_font_file_1
+                curr_font_choice_2 = curr_c_font_2 if curr_c_font_2 != "Same as Primary Font (Single Font Mode)" else curr_c_font_1
+                curr_font_file_2 = curr_c_font_file_2 if "Custom Uploaded" in str(curr_c_font_2) else curr_c_font_file_1
                 
             # Check for per-word font overrides
             for w_item in word1_words:
@@ -2429,8 +2720,8 @@ shadow_depth,
             FONT_1 = resolve_sans_serif_bold_font(curr_font_choice_1, curr_font_file_1)
             FONT_2 = resolve_sans_serif_bold_font(curr_font_choice_2, curr_font_file_2)
             
-            chunk_font_size = FONT_SIZE
-            chunk_bottom_font_size = int(bottom_font_size)
+            chunk_font_size = curr_c_font_size
+            chunk_bottom_font_size = curr_c_bot_font_size
             
             try:
                 FONT_1_obj = resolve_pil_font(curr_font_choice_1, chunk_font_size, custom_upload_file=curr_font_file_1)
@@ -2448,12 +2739,8 @@ shadow_depth,
             
             if max_line_w > max_allowed_w:
                 scale_factor = max_allowed_w / max_line_w
-                chunk_font_size = max(24, int(FONT_SIZE * scale_factor))
-                chunk_bottom_font_size = max(24, int(int(bottom_font_size) * scale_factor))
-
-            
-            # X/Y centering is now handled exactly with true clip sizes below.
-            
+                chunk_font_size = max(24, int(curr_c_font_size * scale_factor))
+                chunk_bottom_font_size = max(24, int(curr_c_bot_font_size * scale_factor))
 
             # Check for per-word X/Y nudging and color overrides
             nudge_x_1 = sum(w_item.get("x_nudge", 0) for w_item in word1_words)
@@ -2461,7 +2748,7 @@ shadow_depth,
             nudge_x_2 = sum(w_item.get("x_nudge", 0) for w_item in word2_words)
             nudge_y_2 = sum(w_item.get("y_nudge", 0) for w_item in word2_words)
             
-            eff_t1_top, eff_t1_mid, eff_t1_bot = t1_top_hex, t1_mid_hex, t1_bot_hex
+            eff_t1_top, eff_t1_mid, eff_t1_bot = curr_c_t1_top, curr_c_t1_mid, curr_c_t1_bot
             for w_item in word1_words:
                 c_over = w_item.get("color_override", "None")
                 if c_over and c_over != "None" and "|" in c_over:
@@ -2475,7 +2762,7 @@ shadow_depth,
                     eff_t1_top, eff_t1_mid, eff_t1_bot = c_over, c_over, c_over
                     break
                     
-            eff_t2_top, eff_t2_mid, eff_t2_bot = t2_top_hex, t2_mid_hex, t2_bot_hex
+            eff_t2_top, eff_t2_mid, eff_t2_bot = curr_c_t2_top, curr_c_t2_mid, curr_c_t2_bot
             for w_item in word2_words:
                 c_over = w_item.get("color_override", "None")
                 if c_over and c_over != "None" and "|" in c_over:
@@ -2507,32 +2794,50 @@ shadow_depth,
 
             t1_clip = render_caption_layer_image_clip(
                 word1_text, font_source=curr_font_choice_1, font_upload=curr_font_file_1, font_size=chunk_font_size, is_top_layer=True, tracking=-int(chunk_font_size * 0.04),
-                gloss_intensity=float(gloss_intensity), show_shadow=show_shadow, shadow_depth=int(shadow_depth),
-                shadow_step_x=int(shadow_step_x), shadow_step_y=int(shadow_step_y),
-                top_hex=eff_t1_top, mid_hex=eff_t1_mid, bot_hex=eff_t1_bot, shadow_hex=t1_shadow_hex,
-                sheen_3d_scope=sheen_3d_scope, show_glow=show_glow, glow_hex=t1_glow_hex, glow_strength=glow_strength,
+                gloss_intensity=curr_c_gloss_int, show_shadow=curr_c_show_shadow, shadow_depth=curr_c_shadow_depth,
+                shadow_step_x=curr_c_shadow_step_x, shadow_step_y=curr_c_shadow_step_y,
+                top_hex=eff_t1_top, mid_hex=eff_t1_mid, bot_hex=eff_t1_bot, shadow_hex=curr_c_t1_shadow,
+                sheen_3d_scope=curr_c_sheen_scope, show_glow=curr_c_show_glow, glow_hex=curr_c_t1_glow, glow_strength=curr_c_glow_strength,
                 highlight_word=highlight_word_t1
             )
             t1_w, t1_h = t1_clip.size
-            pos_x_t1 = (canvas_w - t1_w) // 2 + int(pos_offset_x) + nudge_x_1
+            
+            # Resolve position & baseline for this chunk
+            if not multi_preset_lock_alignment:
+                c_valign = c_style.get("vertical_alignment", vertical_alignment)
+                if "Center" in str(c_valign):
+                    chunk_base_y_ratio = 0.50
+                elif "Upper Third" in str(c_valign):
+                    chunk_base_y_ratio = 0.28
+                elif "Bottom Edge" in str(c_valign):
+                    chunk_base_y_ratio = 0.82
+                else:
+                    chunk_base_y_ratio = 0.60
+                chunk_base_y = int(canvas_h * chunk_base_y_ratio) + int(c_style.get("pos_offset_y", pos_offset_y))
+                chunk_pos_offset_x = int(c_style.get("pos_offset_x", pos_offset_x))
+            else:
+                chunk_base_y = BASE_Y
+                chunk_pos_offset_x = int(pos_offset_x)
+
+            pos_x_t1 = (canvas_w - t1_w) // 2 + chunk_pos_offset_x + nudge_x_1
             
             t2_w, t2_h = 0, 0
             if word2_text:
                 t2_clip = render_caption_layer_image_clip(
                     word2_text, font_source=curr_font_choice_2, font_upload=curr_font_file_2, font_size=chunk_bottom_font_size, is_top_layer=False, tracking=-int(chunk_bottom_font_size * 0.04),
-                    gloss_intensity=float(gloss_intensity), show_shadow=show_shadow, shadow_depth=int(shadow_depth),
-                    shadow_step_x=int(shadow_step_x), shadow_step_y=int(shadow_step_y),
-                    top_hex=eff_t2_top, mid_hex=eff_t2_mid, bot_hex=eff_t2_bot, shadow_hex=t2_shadow_hex,
-                    sheen_3d_scope=sheen_3d_scope, show_glow=show_glow, glow_hex=t2_glow_hex, glow_strength=glow_strength,
+                    gloss_intensity=curr_c_gloss_int, show_shadow=curr_c_show_shadow, shadow_depth=curr_c_shadow_depth,
+                    shadow_step_x=curr_c_shadow_step_x, shadow_step_y=curr_c_shadow_step_y,
+                    top_hex=eff_t2_top, mid_hex=eff_t2_mid, bot_hex=eff_t2_bot, shadow_hex=curr_c_t2_shadow,
+                    sheen_3d_scope=curr_c_sheen_scope, show_glow=curr_c_show_glow, glow_hex=curr_c_t2_glow, glow_strength=curr_c_glow_strength,
                     highlight_word=highlight_word_t2
                 )
                 t2_w, t2_h = t2_clip.size
-                pos_x_t2 = (canvas_w - t2_w) // 2 + int(pos_offset_x) + nudge_x_2
+                pos_x_t2 = (canvas_w - t2_w) // 2 + chunk_pos_offset_x + nudge_x_2
 
             # --- Apply Perfect Vertical Centering Math (Matches Live Preview) ---
             Y1_base = 30
             if word2_text:
-                line_gap = int(chunk_font_size * 0.82 * float(line_spacing_scale))
+                line_gap = int(chunk_font_size * 0.82 * curr_c_line_spacing)
                 Y2_base = 30 + line_gap
                 B_top = min(Y1_base, Y2_base)
                 B_bot = max(Y1_base + t1_h, Y2_base + t2_h)
@@ -2541,13 +2846,13 @@ shadow_depth,
                 B_bot = Y1_base + t1_h
             
             H_stack = B_bot - B_top
-            Y_start = BASE_Y - H_stack // 2
+            Y_start = chunk_base_y - H_stack // 2
             
             base_y_t1 = Y_start + (Y1_base - B_top) + nudge_y_1
             if word2_text:
                 base_y_t2 = Y_start + (Y2_base - B_top) + nudge_y_2
             
-            if bg_box_enable:
+            if curr_c_bg_box:
                 from PIL import Image, ImageDraw
 
                 pad_internal = 35
@@ -2570,7 +2875,7 @@ shadow_depth,
                 
                 bg_img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
                 draw_bg = ImageDraw.Draw(bg_img)
-                rect_color = bg_box_color
+                rect_color = curr_c_bg_box_color
                 if rect_color.startswith('#') and len(rect_color) == 7:
                     rect_color = rect_color + "FF"
                 draw_bg.rectangle([0, 0, box_w, box_h], fill=rect_color)
@@ -2588,54 +2893,6 @@ shadow_depth,
                 else:
                     in_front_speaker_text_clips.append(bg_clip)
             
-            # --- AUTO-TRIGGER 3D ICONS (ICONSCOUT) ---
-            if enable_3d_icons:
-                if custom_3d_trigger_words:
-                    trigger_keywords = {w.strip().lower() for w in custom_3d_trigger_words.split(",") if w.strip()}
-                else:
-                    trigger_keywords = {"instagram", "money", "time", "secret", "youtube", "tiktok", "cash", "like", "subscribe", "dollar", "stop", "go", "fast", "slow", "win", "fail", "idea", "brain"}
-                for w_item in chunk:
-                    w_text_clean = "".join(c for c in w_item["text"].lower() if c.isalnum())
-                    if w_text_clean in trigger_keywords:
-                        from project.services.iconscout_service import search_and_download_3d_icon
-                        icon_path = search_and_download_3d_icon(w_text_clean)
-                        if icon_path:
-                            try:
-                                current_time = w_item["start"]
-                                icon_spawn_history = [t for t in icon_spawn_history if current_time - t <= 15.0]
-                                if len(icon_spawn_history) >= 3:
-                                    break # Max 3 icons per 15 seconds
-                                    
-                                icon_spawn_history.append(current_time)
-                                
-                                # Create and animate the 3D icon
-                                icon_clip = ImageClip(icon_path).resized(width=180)
-                                # Spring bounce animation
-                                def spring_resize(t):
-                                    import math
-                                    val = 1.0 - math.exp(-t*12) * math.cos(t*25)
-                                    return max(0.01, val)
-                                icon_anim = icon_clip.resized(spring_resize).with_start(w_item["start"]).with_end(w_item["start"] + 2.5)
-                                
-                                # Stagger position slightly based on recent icon count to avoid exact overlap
-                                x_offset = -120 - (len(icon_spawn_history) * 35)
-                                y_offset = -140 - (len(icon_spawn_history) * 20)
-                                x_pos = int(canvas_w / 2) + x_offset
-                                y_pos = base_y_t1 + y_offset
-                                
-                                icon_anim = icon_anim.with_position((x_pos, y_pos))
-                                in_front_speaker_text_clips.append(icon_anim)
-                                # Inject specific POP SFX
-                                if enable_sfx and sfx_base_clip is not None:
-                                    sfx_inst = sfx_base_clip.copy()
-                                    if hasattr(sfx_inst, "with_start"):
-                                        sfx_inst = sfx_inst.with_start(w_item["start"])
-                                    else:
-                                        sfx_inst = sfx_inst.set_start(w_item["start"])
-                                    sfx_clips_list.append(sfx_inst)
-                            except Exception as e_icon:
-                                print(f"[Warning] Failed to animate 3D icon: {e_icon}", flush=True)
-                        break # only one icon per chunk max
 
             # --- LINE 1 (Top Line: PIL Extruded Plastic 3D & Specular Sheen + Soft Wipe) ---
             
@@ -2882,28 +3139,39 @@ shadow_depth,
     else:
         base_name = os.path.splitext(os.path.basename(audio_path))[0]
 
+    num_threads = max(1, os.cpu_count() or 4)
+    def _export_optimized(target_file, temp_audio):
+        try:
+            print(f"[AI Studio] Step 4: Exporting video using NVIDIA NVENC GPU acceleration ({num_threads} threads)...", flush=True)
+            final_video.write_videofile(
+                target_file, 
+                fps=30, 
+                codec="h264_nvenc", 
+                audio_codec="aac", 
+                threads=num_threads,
+                ffmpeg_params=["-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "23", "-b:v", "0"],
+                temp_audiofile=temp_audio,
+                logger="bar"
+            )
+        except Exception as e_nvenc:
+            print(f"[AI Studio] NVENC export failed ({e_nvenc}). Falling back to multi-threaded libx264 veryfast...", flush=True)
+            final_video.write_videofile(
+                target_file, 
+                fps=30, 
+                codec="libx264", 
+                preset="veryfast",
+                threads=num_threads,
+                audio_codec="aac", 
+                temp_audiofile=temp_audio,
+                logger="bar"
+            )
+
     if "Burn directly" in str(output_mode):
         output_path = os.path.join(output_dir, f"{base_name}_burn_in.mp4")
-        print(f"[AI Studio] Step 4: Exporting Burn-In video to '{output_path}'...", flush=True)
-        final_video.write_videofile(
-            output_path, 
-            fps=30, 
-            codec="libx264", 
-            audio_codec="aac", 
-            temp_audiofile=os.path.join(output_dir, f"{base_name}_TEMP_audio_burn.mp4"),
-            logger="bar"
-        )
+        _export_optimized(output_path, os.path.join(output_dir, f"{base_name}_TEMP_audio_burn.mp4"))
     else:
         output_path = os.path.join(output_dir, f"{base_name}_green_screen.mp4")
-        print(f"[AI Studio] Step 4: Exporting Green Screen video to '{output_path}'...", flush=True)
-        final_video.write_videofile(
-            output_path, 
-            fps=30, 
-            codec="libx264", 
-            audio_codec="aac", 
-            temp_audiofile=os.path.join(output_dir, f"{base_name}_TEMP_audio_green.mp4"),
-            logger="bar"
-        )
+        _export_optimized(output_path, os.path.join(output_dir, f"{base_name}_TEMP_audio_green.mp4"))
     final_video.close()
     if base_bg is not None and base_bg is not media_clip:
         base_bg.close()

@@ -16,8 +16,8 @@ class TestUI(unittest.TestCase):
         try:
             window = MainWindow()
             self.assertIsNotNone(window)
-            self.assertEqual(window.windowTitle(), "Tiny Word Editor Pro")
-            print("MainWindow initialized successfully.")
+            self.assertIn("ZetaCap Studio", window.windowTitle())
+            print("MainWindow initialized successfully with title:", window.windowTitle())
         except Exception as e:
             self.fail(f"MainWindow initialization failed with error: {e}")
 

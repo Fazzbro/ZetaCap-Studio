@@ -80,7 +80,7 @@ def get_whisper_segments(filepath: str, padding: float = 0.3):
                 
         # Load model (tiny is fast enough for silence detection)
         model = whisper.load_model("tiny", device="cpu", download_root=config.WHISPER_MODEL_DIR)
-        result = whisper.transcribe(model, temp_audio, language="en") # Language doesn't matter for VAD
+        result = whisper.transcribe(model, temp_audio) # Auto-detect spoken language for universal VAD
         
         # Parse words
         words = []

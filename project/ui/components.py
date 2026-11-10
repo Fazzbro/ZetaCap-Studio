@@ -109,36 +109,62 @@ class WaveLoaderWidget(QWidget):
             
         self.tick += 1
 
-class LoadingOverlay(QDialog):
+class LoadingOverlay(QWidget):
     def __init__(self, message="Loading...", parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setModal(True)
-        self.setFixedSize(220, 150)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(240, 160)
         
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
         layout.setContentsMargins(0, 0, 0, 0)
         
         self.bg = QWidget(self)
-        self.bg.setStyleSheet("background-color: rgba(20, 20, 20, 230); border-radius: 12px; border: 1px solid #333;")
-        self.bg.setFixedSize(220, 150)
+        self.bg.setStyleSheet("""
+            QWidget {
+                background-color: rgba(15, 23, 42, 245);
+                border-radius: 12px;
+                border: 1px solid #3b82f6;
+            }
+        """)
+        self.bg.setFixedSize(240, 160)
         
         bg_layout = QVBoxLayout(self.bg)
         bg_layout.setAlignment(Qt.AlignCenter)
-        bg_layout.setSpacing(15)
+        bg_layout.setSpacing(12)
         
         self.wave = WaveLoaderWidget()
         self.label = QLabel(message)
-        self.label.setStyleSheet("color: white; font-weight: bold; font-size: 14px; background: transparent; border: none;")
+        self.label.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 13px; background: transparent; border: none;")
         self.label.setAlignment(Qt.AlignCenter)
+        self.label.setWordWrap(True)
+        
+        self.btn_minimize = QPushButton("Hide")
+        self.btn_minimize.setStyleSheet("background: rgba(255,255,255,0.1); color: #94a3b8; border: 1px solid #475569; border-radius: 4px; padding: 2px 8px;")
+        self.btn_minimize.setCursor(Qt.PointingHandCursor)
+        self.btn_minimize.clicked.connect(self.hide)
         
         bg_layout.addWidget(self.wave, alignment=Qt.AlignCenter)
         bg_layout.addWidget(self.label, alignment=Qt.AlignCenter)
+        bg_layout.addWidget(self.btn_minimize, alignment=Qt.AlignCenter)
         
         layout.addWidget(self.bg)
-        
+        self.center_on_parent()
+
+    def center_on_parent(self):
+        if self.parent():
+            parent_geo = self.parent().rect()
+            self.move((parent_geo.width() - self.width()) // 2, (parent_geo.height() - self.height()) // 2)
+
+    def showEvent(self, event):
+        self.center_on_parent()
+        self.raise_()
+        super().showEvent(event)
+
     def set_message(self, msg):
         self.label.setText(msg)
+
+    def accept(self):
+        self.hide()
+        self.deleteLater()
 

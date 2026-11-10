@@ -4,10 +4,16 @@ import glob
 import shutil
 
 def main():
+    if os.name == 'nt':
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "ZetaCap.exe"], capture_output=True)
+        except Exception:
+            pass
+
     print("Step 1: Compiling Python files to Cython binaries...")
     subprocess.run(["python", "build_secure.py"], check=True)
 
-    print("\Step 2: Hiding original .py files...")
+    print("\nStep 2: Hiding original .py files...")
     # Find all .pyd files that were generated
     pyd_files = glob.glob("project/services/*.pyd") + glob.glob("project/workers/*.pyd")
     

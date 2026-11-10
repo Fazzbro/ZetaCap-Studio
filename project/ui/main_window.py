@@ -139,6 +139,8 @@ class MainWindow(QMainWindow):
         }
         """
         self.setStyleSheet(qss)
+        self.setWindowTitle("ZetaCap Studio — Modern AI Captioning & VFX Suite")
+        self.resize(1600, 950)
 
         self.setup_ui()
         self.setup_connections()
@@ -276,6 +278,23 @@ class MainWindow(QMainWindow):
         self.override_warning_label.hide()
         self.settings.layout().insertWidget(0, self.override_warning_label)
         
+        self.preset_edit_banner = QWidget()
+        self.preset_edit_banner.setStyleSheet("background-color: #1e3a8a; border: 1px solid #3b82f6; border-radius: 4px;")
+        banner_layout = QHBoxLayout(self.preset_edit_banner)
+        banner_layout.setContentsMargins(8, 8, 8, 8)
+        self.preset_edit_label = QLabel("Editing Preset: ")
+        self.preset_edit_label.setStyleSheet("color: white; font-weight: bold; border: none; background: transparent;")
+        
+        btn_exit_edit = QPushButton("Close")
+        btn_exit_edit.setStyleSheet("background-color: #ef4444; color: white; padding: 4px 8px; border-radius: 3px;")
+        btn_exit_edit.setCursor(Qt.PointingHandCursor)
+        btn_exit_edit.clicked.connect(self._exit_preset_edit_mode)
+        
+        banner_layout.addWidget(self.preset_edit_label, stretch=1)
+        banner_layout.addWidget(btn_exit_edit)
+        self.preset_edit_banner.hide()
+        self.settings.layout().insertWidget(1, self.preset_edit_banner)
+        
         splitter.addWidget(self.settings)
 
         # Right Panel (Preview & Editor)
@@ -321,6 +340,44 @@ class MainWindow(QMainWindow):
         self.prep_studio.reset_requested.connect(self.on_prep_reset)
         self.btn_back_to_prep.clicked.connect(lambda: self.stack.setCurrentIndex(0))
         self.btn_connect_claude.clicked.connect(self.setup_claude_integration)
+        self.settings.edit_preset_requested.connect(self._enter_preset_edit_mode)
+        self.settings.apply_builtin_preset_requested.connect(lambda p: self._apply_preset_file(p, show_dialog=True, update_pool=True))
+        self.settings.reset_project_requested.connect(self._reset_workspace)
+        self.settings.preset_pool_updated.connect(self._schedule_preview)
+
+    def _reset_workspace(self):
+        reply = QMessageBox.question(
+            self,
+            "Reset Workspace",
+            "Are you sure you want to reset all settings, clear the caption table, and empty the preset pool?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.settings.set_preset_pool([])
+            self.settings.input_video.clear()
+            self.editor.table.setRowCount(0)
+            self.editor.words_data = []
+            if hasattr(self.preview, 'load_video'):
+                self.preview.load_video(None)
+            self._exit_preset_edit_mode()
+            self._schedule_preview()
+            QMessageBox.information(self, "Workspace Reset", "Workspace and preset pool have been reset.")
+
+    def _enter_preset_edit_mode(self, p_path):
+        import os
+        self._apply_preset_file(p_path, show_dialog=False, update_pool=False)
+        self.current_editing_preset = p_path
+        self.preset_edit_label.setText(f"Editing Pool Preset: {os.path.basename(p_path)}")
+        self.preset_edit_banner.show()
+        if hasattr(self.settings, "verticalScrollBar"):
+            self.settings.verticalScrollBar().setValue(0)
+        self._schedule_preview()
+
+    def _exit_preset_edit_mode(self):
+        self.current_editing_preset = None
+        self.preset_edit_banner.hide()
+        self._schedule_preview()
 
     def on_prep_finished(self, compiled_video_path):
         self.settings.input_video.setText(compiled_video_path)
@@ -332,6 +389,7 @@ class MainWindow(QMainWindow):
         
     def on_prep_reset(self):
         # Clear Main Studio state completely
+        self.settings.set_preset_pool([])
         self.settings.input_video.clear()
         self.preview.load_video(None)
         self.editor.table.setRowCount(0)
@@ -377,7 +435,6 @@ class MainWindow(QMainWindow):
                 json.dump(project_data, f, indent=4)
                 
             # Zip the temp directory
-            # shutil.make_archive adds .zip, so we strip .zeta temporarily
             base_name = file_name
             if base_name.endswith('.zeta'):
                 base_name = base_name[:-5]
@@ -402,9 +459,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to save project: {e}")
 
     def _load_preset(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Load Project", "", "Zeta Project (*.zeta);;JSON Files (*.json)")
-        if not file_name:
-            return
+        from ..core.config import config
+        presets_dir = config.PRESETS_DIR if os.path.exists(config.PRESETS_DIR) else ""
+        file_name, _ = QFileDialog.getOpenFileName(self, "Load Project", presets_dir, "Zeta Project (*.zeta);;JSON Files (*.json)")
+        if file_name:
+            self._apply_preset_file(file_name, show_dialog=True, update_pool=True)
+
+    def _apply_preset_file(self, file_name, show_dialog=True, update_pool=True):
         try:
             import json, os, zipfile, tempfile, uuid
             
@@ -507,6 +568,11 @@ class MainWindow(QMainWindow):
             safe_set(self.settings.zoom_frequency, s.get("zoom_frequency"))
             safe_set(self.settings.zoom_transition_style, s.get("zoom_transition_style"))
             safe_set(self.settings.face_detector_model, s.get("face_detector_model"))
+            safe_set(self.settings.enable_dynamic_tracking, s.get("enable_dynamic_tracking"))
+            safe_set(self.settings.tracking_mode, s.get("tracking_mode"))
+            safe_set(self.settings.tracking_smoothness, s.get("tracking_smoothness"))
+            safe_set(self.settings.tracking_start_sec, s.get("tracking_start_sec"))
+            safe_set(self.settings.tracking_end_sec, s.get("tracking_end_sec"))
             safe_set(self.settings.min_cooldown_slider, s.get("min_cooldown_slider"))
             safe_set(self.settings.zoom_hold_slider, s.get("zoom_hold_slider"))
             safe_set(self.settings.enable_sfx, s.get("enable_sfx"))
@@ -529,11 +595,39 @@ class MainWindow(QMainWindow):
             safe_set(self.settings.rotoscope_start_sec, s.get("rotoscope_start_sec"))
             safe_set(self.settings.rotoscope_end_sec, s.get("rotoscope_end_sec"))
             
-            QMessageBox.information(self, "Success", f"Preset loaded successfully.")
+            # Restore multi-preset pool configuration if loading a full workspace
+            if update_pool:
+                if "multi_preset_pool" in s:
+                    pool = s.get("multi_preset_pool", [])
+                    from project.services.preset_choreographer import resolve_preset_path
+                    resolved_pool = []
+                    for item in pool:
+                        if isinstance(item, dict) and "path" in item:
+                            rp = resolve_preset_path(item["path"])
+                            item_copy = dict(item)
+                            if rp:
+                                item_copy["path"] = rp
+                            resolved_pool.append(item_copy)
+                        elif isinstance(item, str):
+                            rp = resolve_preset_path(item)
+                            resolved_pool.append(rp or item)
+                        else:
+                            resolved_pool.append(item)
+                    self.settings.set_preset_pool(resolved_pool)
+                else:
+                    self.settings.set_preset_pool([])
+                safe_set(self.settings.multi_preset_mode, s.get("multi_preset_mode", "Single Preset (Disabled)"))
+                safe_set(self.settings.multi_preset_lock_alignment, s.get("multi_preset_lock_alignment", True))
+                safe_set(self.settings.multi_preset_unified_zoom, s.get("multi_preset_unified_zoom", True))
+            
+            self._schedule_preview()
+            if show_dialog:
+                QMessageBox.information(self, "Success", f"Preset '{os.path.basename(file_name)}' loaded into editor.")
         except Exception as e:
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "Error", f"Failed to load preset: {e}")
+            if show_dialog:
+                QMessageBox.critical(self, "Error", f"Failed to load preset: {e}")
 
     def browse_video(self):
         file_names, _ = QFileDialog.getOpenFileNames(self, "Select Videos", "", "Video Files (*.mp4 *.mov *.avi)")
@@ -576,6 +670,11 @@ class MainWindow(QMainWindow):
 
     def _get_full_config(self):
         config = self.settings.get_config()
+        if getattr(self, "current_editing_preset", None):
+            # Temporarily disable multi-preset so preview shows the current UI settings exactly
+            config['multi_preset_pool'] = []
+            config['multi_preset_mode'] = "Single Preset (Disabled)"
+            
         if getattr(self, "override_active", False) and hasattr(self, "global_settings_cache"):
             for key in ["font_preset_dropdown", "font_preset_choice_2", "t1_top", "t1_mid", "t1_bot", "t1_shadow", "t1_glow", "t2_top", "t2_mid", "t2_bot", "t2_shadow", "t2_glow", "pos_offset_x", "pos_offset_y"]:
                 if self.global_settings_cache.get(key) is not None:
@@ -928,6 +1027,14 @@ class MainWindow(QMainWindow):
                         self._mcp_update_animation_settings(payload)
                     elif action == "override_word_style":
                         self._mcp_override_word_style(payload)
+                    elif action == "update_color_grading_settings":
+                        self._mcp_update_color_grading_settings(payload)
+                    elif action == "set_multi_preset_choreography":
+                        self._mcp_set_multi_preset_choreography(payload)
+                    elif action == "update_face_tracking_settings":
+                        self._mcp_update_face_tracking_settings(payload)
+                    else:
+                        print(f"Unknown MCP action: {action}")
                         
                     if ts > max_ts:
                         max_ts = ts
@@ -977,6 +1084,34 @@ class MainWindow(QMainWindow):
         idx = self.settings.zoom_transition_style.findText(zoom_style)
         if idx >= 0:
             self.settings.zoom_transition_style.setCurrentIndex(idx)
+        if "enable_dynamic_tracking" in payload and payload["enable_dynamic_tracking"] is not None:
+            self.settings.enable_dynamic_tracking.setChecked(bool(payload["enable_dynamic_tracking"]))
+        if "tracking_mode" in payload and payload["tracking_mode"]:
+            t_idx = self.settings.tracking_mode.findText(str(payload["tracking_mode"]))
+            if t_idx >= 0:
+                self.settings.tracking_mode.setCurrentIndex(t_idx)
+        self.settings.blockSignals(False)
+        self._schedule_preview()
+
+    def _mcp_update_face_tracking_settings(self, payload):
+        enable_tracking = payload.get("enable_dynamic_tracking", True)
+        tracking_mode = payload.get("tracking_mode")
+        smoothness = payload.get("tracking_smoothness")
+        start_sec = payload.get("tracking_start_sec")
+        end_sec = payload.get("tracking_end_sec")
+        
+        self.settings.blockSignals(True)
+        self.settings.enable_dynamic_tracking.setChecked(bool(enable_tracking))
+        if tracking_mode:
+            idx = self.settings.tracking_mode.findText(str(tracking_mode))
+            if idx >= 0:
+                self.settings.tracking_mode.setCurrentIndex(idx)
+        if smoothness is not None:
+            self.settings.tracking_smoothness.setValue(int(smoothness))
+        if start_sec is not None:
+            self.settings.tracking_start_sec.setText(str(start_sec))
+        if end_sec is not None:
+            self.settings.tracking_end_sec.setText(str(end_sec))
         self.settings.blockSignals(False)
         self._schedule_preview()
 
@@ -1030,12 +1165,57 @@ class MainWindow(QMainWindow):
     def _mcp_update_sfx_settings(self, payload):
         enable_sfx = payload.get("enable_sfx", True)
         sfx_preset_choice = payload.get("sfx_preset_choice")
+        sfx_upload_file = payload.get("sfx_upload_file")
         
+        self.settings.blockSignals(True)
         self.settings.enable_sfx.setChecked(enable_sfx)
+        if sfx_upload_file:
+            self.settings.sfx_upload_file.setText(str(sfx_upload_file).strip().strip('"').strip("'"))
         if sfx_preset_choice:
-            idx = self.settings.sfx_preset_choice.findText(sfx_preset_choice)
-            if idx >= 0:
-                self.settings.sfx_preset_choice.setCurrentIndex(idx)
+            clean = str(sfx_preset_choice).strip().strip('"').strip("'")
+            if os.path.exists(clean) and os.path.isfile(clean):
+                self.settings.sfx_upload_file.setText(clean)
+            else:
+                idx = self.settings.sfx_preset_dropdown.findText(sfx_preset_choice)
+                if idx >= 0:
+                    self.settings.sfx_preset_dropdown.setCurrentIndex(idx)
+        self.settings.blockSignals(False)
         self._schedule_preview()
+
+    def _mcp_update_color_grading_settings(self, payload):
+        color_grade_style = payload.get("color_grade_style")
+        custom_lut_path = payload.get("custom_lut_path")
+        
+        self.settings.blockSignals(True)
+        if color_grade_style:
+            idx = self.settings.color_grade_style.findText(color_grade_style)
+            if idx >= 0:
+                self.settings.color_grade_style.setCurrentIndex(idx)
+        
+        if custom_lut_path:
+            self.settings.custom_lut_path.setText(custom_lut_path)
+            
+        self.settings.blockSignals(False)
+        self._schedule_preview()
+
+    def _mcp_set_multi_preset_choreography(self, payload):
+        mode = payload.get("multi_preset_mode", "Natural Sentence Cadence (Recommended)")
+        pool = payload.get("multi_preset_pool", [])
+        lock_alignment = payload.get("multi_preset_lock_alignment", True)
+        unified_zoom = payload.get("multi_preset_unified_zoom", True)
+        
+        self.settings.blockSignals(True)
+        idx = self.settings.multi_preset_mode.findText(mode)
+        if idx >= 0:
+            self.settings.multi_preset_mode.setCurrentIndex(idx)
+            
+        self.settings.multi_preset_lock_alignment.setChecked(lock_alignment)
+        self.settings.multi_preset_unified_zoom.setChecked(unified_zoom)
+        self.settings.blockSignals(False)
+        
+        # Populate pool
+        self.settings.set_preset_pool(pool)
+        self._schedule_preview()
+
 
 

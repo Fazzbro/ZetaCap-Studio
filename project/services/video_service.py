@@ -294,18 +294,24 @@ def resolve_and_load_sfx_clip(sfx_preset, sfx_upload, volume=0.30):
     """Safely resolves the SFX preset or upload path, sanitizing chapters if necessary to avoid MoviePy IndexError."""
     from ..core.config import get_bundled_path
     sfx_path = None
-    if sfx_upload and os.path.exists(str(sfx_upload)):
-        sfx_path = str(sfx_upload)
-    elif str(sfx_preset) != "None":
-        sfx_path = None
-        if "Mixkit Modern Technology" in str(sfx_preset):
+    
+    # 1. Check direct file paths first (from either sfx_upload or sfx_preset)
+    for candidate in [sfx_upload, sfx_preset]:
+        if candidate and isinstance(candidate, (str, bytes)):
+            cand_str = str(candidate).strip().strip('"').strip("'")
+            if cand_str and cand_str.lower() != "none" and os.path.exists(cand_str) and os.path.isfile(cand_str):
+                sfx_path = os.path.abspath(cand_str)
+                break
+
+    # 2. If not a direct file path, check built-in preset strings
+    if not sfx_path and sfx_preset and str(sfx_preset).lower() != "none":
+        preset_str = str(sfx_preset)
+        if "Mixkit Modern Technology" in preset_str:
             sfx_path = get_bundled_path(os.path.join("assets", "mixkit-modern-technology-select-3124.wav"), r"d:\Python_Projects\captions\project\assets\mixkit-modern-technology-select-3124.wav")
-        elif "Motion Design AfterEffects Pop" in str(sfx_preset):
+        elif "Motion Design AfterEffects Pop" in preset_str:
             sfx_path = get_bundled_path(os.path.join("assets", "hi-sfx-aftereffects-videoediting-motiondesign-motiongraphi_49nxh1eV (1).mp3"), r"d:\Python_Projects\captions\project\assets\hi-sfx-aftereffects-videoediting-motiondesign-motiongraphi_49nxh1eV (1).mp3")
-        elif "UI Caption Accent" in str(sfx_preset):
+        elif "UI Caption Accent" in preset_str:
             sfx_path = get_bundled_path(os.path.join("assets", "ui cap.mp3"), r"d:\Python_Projects\captions\project\assets\ui cap.mp3")
-    else:
-        return None
 
     if not sfx_path or not os.path.exists(sfx_path):
         return None
