@@ -86,8 +86,8 @@ Your support helps maintain dependencies, build new animation engines, and keep 
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/Fazzbro/iman-gadzhi-captions-studio.git
-cd iman-gadzhi-captions-studio
+git clone https://github.com/Fazzbro/ZetaCap-Studio.git
+cd ZetaCap-Studio
 ```
 
 ### 2. Set Up Virtual Environment
